@@ -39,11 +39,32 @@ func (c *context) addErr(loc errors.Location, rule string, format string, a ...i
 }
 
 func (c *context) addErrMultiLoc(locs []errors.Location, rule string, format string, a ...interface{}) {
-	c.errs = append(c.errs, &errors.QueryError{
+	qerr := &errors.QueryError{
 		Message:   fmt.Sprintf(format, a...),
 		Locations: locs,
 		Rule:      rule,
-	})
+	}
+	// Run a quadratic loop to ensure unique errors are only added once.  Typically there are a
+	// handful (or 0) errors for any given query, so the quadratic behavior isn't that bad.
+	//
+	// Prior to https://github.com/neevaco/graphql-go/pull/1 selectionPairs were never deleted from
+	// overlapValidated, allowing it to be used for two purposes:
+	//   1. Break out of infinite loops caused by recursive query fragments.
+	//   2. Ensure only unique errors are added to the context.
+	// Now overlapValidated can only be used for (1) but not (2).  So this is a quick hack to ensure
+	// the unit tests continue to pass.
+	//
+	// TODO(toddw): The right way to do this is to add a "quick query validation" option that we use
+	// during serving, which causes the validation logic to early exit on first error.  We should
+	// also ensure invalid queries are similarly caught early, rather than wasting time+space on
+	// them.  That's all possible, but hasn't been done yet.
+	qerrString := qerr.Error()
+	for _, old := range c.errs {
+		if old.Error() == qerrString {
+			return
+		}
+	}
+	c.errs = append(c.errs, qerr)
 }
 
 type opContext struct {
@@ -491,11 +512,26 @@ func (c *context) validateOverlap(a, b query.Selection, reasons *[]string, locs 
 		return
 	}
 
-	if _, ok := c.overlapValidated[selectionPair{a, b}]; ok {
+	// Break out of infinite loops caused by recursive query fragments.  Prior to
+	// https://github.com/neevaco/graphql-go/pull/1 entries were never deleted from
+	// overlapValidated, which is correct and allows overlapValidated to also be used to dedup
+	// unique errors, but used lots of memory; every pair of sibling selections in each query were
+	// added to the map.  Now we delete entries from overlapValidated once this method returns,
+	// which means that rather than tracking all selection pairs in each query, we're only tracking
+	// the selection pairs that are visited in the depth-first traversal.
+	//
+	// For test queries based on a prod API, this reduced the max size of overlapValidated from 4M
+	// to 7, and reduced the runtime from 53s to 28s.
+	pairAB := selectionPair{a, b}
+	if _, ok := c.overlapValidated[pairAB]; ok {
 		return
 	}
-	c.overlapValidated[selectionPair{a, b}] = struct{}{}
-	c.overlapValidated[selectionPair{b, a}] = struct{}{}
+	pairBA := selectionPair{b, a}
+	if _, ok := c.overlapValidated[pairBA]; ok {
+		return
+	}
+	c.overlapValidated[pairAB] = struct{}{}
+	defer delete(c.overlapValidated, pairAB)
 
 	switch a := a.(type) {
 	case *query.Field:

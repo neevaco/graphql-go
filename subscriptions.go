@@ -11,7 +11,6 @@ import (
 	"github.com/graph-gophers/graphql-go/internal/exec/resolvable"
 	"github.com/graph-gophers/graphql-go/internal/exec/selected"
 	"github.com/graph-gophers/graphql-go/internal/query"
-	"github.com/graph-gophers/graphql-go/internal/validation"
 	"github.com/graph-gophers/graphql-go/introspection"
 )
 
@@ -36,9 +35,7 @@ func (s *Schema) subscribe(ctx context.Context, queryString string, operationNam
 		return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{qErr}})
 	}
 
-	validationFinish := s.validationTracer.TraceValidation()
-	errs := validation.Validate(s.schema, doc, variables, s.maxDepth)
-	validationFinish(errs)
+	errs := s.validate(ctx, queryString, doc, variables)
 	if len(errs) != 0 {
 		return sendAndReturnClosed(&Response{Errors: errs})
 	}

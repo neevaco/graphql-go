@@ -1,17 +1,25 @@
 package trace
 
 import (
+	"context"
+
 	"github.com/graph-gophers/graphql-go/errors"
 )
 
-type TraceValidationFinishFunc = TraceQueryFinishFunc
+// ValidationStats represents metrics collected during validation.
+type ValidationStats struct {
+	CacheHit bool // Was this a cache hit?
+	CacheLen int  // Number of valid queries in the cache.
+}
+
+type TraceValidationFinishFunc = func([]*errors.QueryError, ValidationStats)
 
 type ValidationTracer interface {
-	TraceValidation() TraceValidationFinishFunc
+	TraceValidation(ctx context.Context) (context.Context, TraceValidationFinishFunc)
 }
 
 type NoopValidationTracer struct{}
 
-func (NoopValidationTracer) TraceValidation() TraceValidationFinishFunc {
-	return func(errs []*errors.QueryError) {}
+func (NoopValidationTracer) TraceValidation(ctx context.Context) (context.Context, TraceValidationFinishFunc) {
+	return ctx, func([]*errors.QueryError, ValidationStats) {}
 }

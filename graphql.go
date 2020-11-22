@@ -69,6 +69,7 @@ type Schema struct {
 	maxParallelism           int
 	tracer                   trace.Tracer
 	validationTracer         trace.ValidationTracer
+	validationCache          *common.LRUKeyCache
 	logger                   log.Logger
 	useStringDescriptions    bool
 	disableIntrospection     bool
@@ -123,6 +124,18 @@ func ValidationTracer(tracer trace.ValidationTracer) SchemaOpt {
 	}
 }
 
+// ValidationCacheMaxLen sets the max number of valid query strings to cache, for faster validation.
+// The cache is based on the literal text of the query string, so semantically identical queries
+// with different syntax (e.g. whitespace, field ordering) will be cached separately.
+// The default maxLen of 0 means the cache is disabled.
+func ValidationCacheMaxLen(maxLen int) SchemaOpt {
+	return func(s *Schema) {
+		if maxLen > 0 {
+			s.validationCache = common.NewLRUKeyCache(maxLen)
+		}
+	}
+}
+
 // Logger is used to log panics during query execution. It defaults to exec.DefaultLogger.
 func Logger(logger log.Logger) SchemaOpt {
 	return func(s *Schema) {
@@ -166,8 +179,29 @@ func (s *Schema) ValidateWithVariables(queryString string, variables map[string]
 	if qErr != nil {
 		return []*errors.QueryError{qErr}
 	}
+	return s.validate(context.TODO(), queryString, doc, variables)
+}
 
-	return validation.Validate(s.schema, doc, variables, s.maxDepth)
+func (s *Schema) validate(ctx context.Context, queryString string, doc *query.Document, variables map[string]interface{}) (errsReturn []*errors.QueryError) {
+	var stats trace.ValidationStats
+	_, finish := s.validationTracer.TraceValidation(ctx)
+	defer func() {
+		finish(errsReturn, stats)
+	}()
+
+	var cacheKey uint64
+	if s.validationCache != nil {
+		cacheKey = s.validationCache.MakeKey(queryString)
+		if stats.CacheLen, stats.CacheHit = s.validationCache.Lookup(cacheKey); stats.CacheHit {
+			return nil
+		}
+	}
+	errs := validation.Validate(s.schema, doc, variables, s.maxDepth)
+	if s.validationCache != nil && len(errs) == 0 {
+		// Only insert into the validation cache on success.
+		stats.CacheLen = s.validationCache.Insert(cacheKey)
+	}
+	return errs
 }
 
 // Exec executes the given query with the schema's resolver. It panics if the schema was created
@@ -186,9 +220,7 @@ func (s *Schema) exec(ctx context.Context, queryString string, operationName str
 		return &Response{Errors: []*errors.QueryError{qErr}}
 	}
 
-	validationFinish := s.validationTracer.TraceValidation()
-	errs := validation.Validate(s.schema, doc, variables, s.maxDepth)
-	validationFinish(errs)
+	errs := s.validate(ctx, queryString, doc, variables)
 	if len(errs) != 0 {
 		return &Response{Errors: errs}
 	}

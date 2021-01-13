@@ -66,6 +66,34 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
+
+	// Run ValidateWithoutVariables and ValidateVariablesOnly separately.
+	for _, test := range testData.Tests {
+		t.Run(test.Name, func(t *testing.T) {
+			d, err := query.Parse(test.Query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := []*errors.QueryError{}
+			errs := validation.ValidateWithoutVariables(schemas[test.Schema], d, 0)
+			for _, err := range validation.ValidateVariablesOnly(schemas[test.Schema], d, test.Vars) {
+				if !errors.HasQueryError(err.Error(), errs) {
+					errs = append(errs, err)
+				}
+			}
+			for _, err := range errs {
+				if err.Rule == test.Rule {
+					err.Rule = ""
+					got = append(got, err)
+				}
+			}
+			sortLocations(test.Errors)
+			sortLocations(got)
+			if !reflect.DeepEqual(test.Errors, got) {
+				t.Errorf("wrong errors\nexpected: %v\ngot:      %v", test.Errors, got)
+			}
+		})
+	}
 }
 
 func sortLocations(errs []*errors.QueryError) {

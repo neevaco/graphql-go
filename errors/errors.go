@@ -40,3 +40,14 @@ func (err *QueryError) Error() string {
 }
 
 var _ error = &QueryError{}
+
+// HasQueryError returns true iff errString already exists in errs.
+// WARNING: This does a linear scan through errs, so it can easily lead to quadratic behavior.
+func HasQueryError(errString string, errs []*QueryError) bool {
+	for _, err := range errs {
+		if err.Error() == errString {
+			return true
+		}
+	}
+	return false
+}

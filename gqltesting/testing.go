@@ -26,25 +26,30 @@ type Test struct {
 }
 
 // RunTests runs the given GraphQL test cases as subtests.
-func RunTests(t *testing.T, tests []*Test) {
+func RunTests(t *testing.T, tests []*Test, opts ...graphql.SchemaOpt) {
 	if len(tests) == 1 {
-		RunTest(t, tests[0])
+		RunTest(t, tests[0], opts...)
 		return
 	}
 
 	for i, test := range tests {
 		t.Run(strconv.Itoa(i+1), func(t *testing.T) {
-			RunTest(t, test)
+			RunTest(t, test, opts...)
 		})
 	}
 }
 
 // RunTest runs a single GraphQL test case.
-func RunTest(t *testing.T, test *Test) {
+func RunTest(t *testing.T, test *Test, opts ...graphql.SchemaOpt) {
 	if test.Context == nil {
 		test.Context = context.Background()
 	}
-	result := test.Schema.Exec(test.Context, test.Query, test.OperationName, test.Variables)
+	var result *graphql.Response
+	if len(opts) == 0 {
+		result = test.Schema.Exec(test.Context, test.Query, test.OperationName, test.Variables)
+	} else {
+		result = test.Schema.ExecWithOptions(test.Context, test.Query, test.OperationName, test.Variables, opts...)
+	}
 
 	checkErrors(t, test.ExpectedErrors, result.Errors)
 

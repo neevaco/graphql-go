@@ -35,7 +35,7 @@ func (s *Schema) subscribe(ctx context.Context, queryString string, operationNam
 		return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{qErr}})
 	}
 
-	errs := s.validate(ctx, queryString, doc, variables)
+	errs := s.validate(ctx, queryString, doc, variables, true)
 	if len(errs) != 0 {
 		return sendAndReturnClosed(&Response{Errors: errs})
 	}

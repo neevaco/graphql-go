@@ -2459,12 +2459,10 @@ func TestIntrospection(t *testing.T) {
 	})
 }
 
-var starwarsSchemaNoIntrospection = graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, []graphql.SchemaOpt{graphql.DisableIntrospection()}...)
-
-func TestIntrospectionDisableIntrospection(t *testing.T) {
-	gqltesting.RunTests(t, []*gqltesting.Test{
+func disableIntrospectionTests(schema *graphql.Schema, allowTypeName bool) []*gqltesting.Test {
+	tests := []*gqltesting.Test{
 		{
-			Schema: starwarsSchemaNoIntrospection,
+			Schema: schema,
 			Query: `
 				{
 					__schema {
@@ -2479,9 +2477,8 @@ func TestIntrospectionDisableIntrospection(t *testing.T) {
 				}
 			`,
 		},
-
 		{
-			Schema: starwarsSchemaNoIntrospection,
+			Schema: schema,
 			Query: `
 				{
 					__schema {
@@ -2496,9 +2493,8 @@ func TestIntrospectionDisableIntrospection(t *testing.T) {
 				}
 			`,
 		},
-
 		{
-			Schema: starwarsSchemaNoIntrospection,
+			Schema: schema,
 			Query: `
 				{
 					a: __type(name: "Droid") {
@@ -2538,9 +2534,8 @@ func TestIntrospectionDisableIntrospection(t *testing.T) {
 				}
 			`,
 		},
-
 		{
-			Schema: starwarsSchemaNoIntrospection,
+			Schema: schema,
 			Query: `
 				{
 					__type(name: "Droid") {
@@ -2567,9 +2562,8 @@ func TestIntrospectionDisableIntrospection(t *testing.T) {
 				}
 			`,
 		},
-
 		{
-			Schema: starwarsSchemaNoIntrospection,
+			Schema: schema,
 			Query: `
 				{
 					__type(name: "Episode") {
@@ -2584,9 +2578,8 @@ func TestIntrospectionDisableIntrospection(t *testing.T) {
 				}
 			`,
 		},
-
 		{
-			Schema: starwarsSchemaNoIntrospection,
+			Schema: schema,
 			Query: `
 				{
 					__schema {
@@ -2614,7 +2607,102 @@ func TestIntrospectionDisableIntrospection(t *testing.T) {
 				}
 			`,
 		},
-	})
+	}
+	if allowTypeName {
+		tests = append(tests,
+			&gqltesting.Test{
+				Schema: schema,
+				Query: `
+				{
+					search(text: "an") {
+						__typename
+						... on Human {
+							name
+						}
+						... on Droid {
+							name
+						}
+						... on Starship {
+							name
+						}
+					}
+				}
+			`,
+				ExpectedResult: `
+				{
+					"search": [
+						{
+							"__typename": "Human",
+							"name": "Han Solo"
+						},
+						{
+							"__typename": "Human",
+							"name": "Leia Organa"
+						},
+						{
+							"__typename": "Starship",
+							"name": "TIE Advanced x1"
+						}
+					]
+				}
+			`,
+			})
+	} else {
+		tests = append(tests,
+			&gqltesting.Test{
+				Schema: schema,
+				Query: `
+				{
+					search(text: "an") {
+						__typename
+						... on Human {
+							name
+						}
+						... on Droid {
+							name
+						}
+						... on Starship {
+							name
+						}
+					}
+				}
+			`,
+				ExpectedResult: `
+				{
+					"search": [
+						{
+							"name": "Han Solo"
+						},
+						{
+							"name": "Leia Organa"
+						},
+						{
+							"name": "TIE Advanced x1"
+						}
+					]
+				}
+			`,
+			})
+	}
+	return tests
+}
+
+func TestIntrospectionDisableIntrospection(t *testing.T) {
+	schema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.DisableIntrospection())
+	gqltesting.RunTests(t, disableIntrospectionTests(schema, false))
+}
+
+func TestIntrospectionDisableIntrospectionInExec(t *testing.T) {
+	gqltesting.RunTests(t, disableIntrospectionTests(starwarsSchema, false), graphql.DisableIntrospection())
+}
+
+func TestIntrospectionDisableSchemaIntrospection(t *testing.T) {
+	schema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.DisableSchemaIntrospection())
+	gqltesting.RunTests(t, disableIntrospectionTests(schema, true))
+}
+
+func TestIntrospectionDisableSchemaIntrospectionInExec(t *testing.T) {
+	gqltesting.RunTests(t, disableIntrospectionTests(starwarsSchema, true), graphql.DisableSchemaIntrospection())
 }
 
 func TestMutationOrder(t *testing.T) {
@@ -2997,7 +3085,7 @@ func TestInput(t *testing.T) {
 	})
 }
 
-type inputArgumentsHello struct {}
+type inputArgumentsHello struct{}
 
 type inputArgumentsScalarMismatch1 struct{}
 

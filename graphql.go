@@ -65,15 +65,16 @@ type Schema struct {
 	schema *schema.Schema
 	res    *resolvable.Schema
 
-	maxDepth                 int
-	maxParallelism           int
-	tracer                   trace.Tracer
-	validationTracer         trace.ValidationTracer
-	validationCache          *common.LRUKeyCache
-	logger                   log.Logger
-	useStringDescriptions    bool
-	disableIntrospection     bool
-	subscribeResolverTimeout time.Duration
+	maxDepth                   int
+	maxParallelism             int
+	tracer                     trace.Tracer
+	validationTracer           trace.ValidationTracer
+	validationCache            *common.LRUKeyCache
+	logger                     log.Logger
+	useStringDescriptions      bool
+	disableIntrospection       bool
+	disableSchemaIntrospection bool
+	subscribeResolverTimeout   time.Duration
 }
 
 // SchemaOpt is an option to pass to ParseSchema or MustParseSchema.
@@ -143,10 +144,17 @@ func Logger(logger log.Logger) SchemaOpt {
 	}
 }
 
-// DisableIntrospection disables introspection queries.
+// DisableIntrospection disables `__schema`, `__type` and `__typename` introspection queries.
 func DisableIntrospection() SchemaOpt {
 	return func(s *Schema) {
 		s.disableIntrospection = true
+	}
+}
+
+// DisableSchemaIntrospection disables `__schema` and `__type` introspection queries.
+func DisableSchemaIntrospection() SchemaOpt {
+	return func(s *Schema) {
+		s.disableSchemaIntrospection = true
 	}
 }
 
@@ -170,7 +178,11 @@ type Response struct {
 
 // Validate validates the given query with the schema.
 func (s *Schema) Validate(queryString string) []*errors.QueryError {
-	return s.ValidateWithVariables(queryString, nil)
+	doc, qErr := query.Parse(queryString)
+	if qErr != nil {
+		return []*errors.QueryError{qErr}
+	}
+	return s.validate(context.TODO(), queryString, doc, nil, false)
 }
 
 // ValidateWithVariables validates the given query with the schema and the input variables.
@@ -179,10 +191,10 @@ func (s *Schema) ValidateWithVariables(queryString string, variables map[string]
 	if qErr != nil {
 		return []*errors.QueryError{qErr}
 	}
-	return s.validate(context.TODO(), queryString, doc, variables)
+	return s.validate(context.TODO(), queryString, doc, variables, true)
 }
 
-func (s *Schema) validate(ctx context.Context, queryString string, doc *query.Document, variables map[string]interface{}) (errsReturn []*errors.QueryError) {
+func (s *Schema) validate(ctx context.Context, queryString string, doc *query.Document, variables map[string]interface{}, checkVariables bool) (errsReturn []*errors.QueryError) {
 	var stats trace.ValidationStats
 	_, finish := s.validationTracer.TraceValidation(ctx)
 	defer func() {
@@ -193,10 +205,19 @@ func (s *Schema) validate(ctx context.Context, queryString string, doc *query.Do
 	if s.validationCache != nil {
 		cacheKey = s.validationCache.MakeKey(queryString)
 		if stats.CacheLen, stats.CacheHit = s.validationCache.Lookup(cacheKey); stats.CacheHit {
+			if checkVariables {
+				// On cache hits, we still need to validate variables, which may change per query.
+				return validation.ValidateVariablesOnly(s.schema, doc, variables)
+			}
 			return nil
 		}
 	}
-	errs := validation.Validate(s.schema, doc, variables, s.maxDepth)
+	var errs []*errors.QueryError
+	if checkVariables {
+		errs = validation.Validate(s.schema, doc, variables, s.maxDepth)
+	} else {
+		errs = validation.ValidateWithoutVariables(s.schema, doc, s.maxDepth)
+	}
 	if s.validationCache != nil && len(errs) == 0 {
 		// Only insert into the validation cache on success.
 		stats.CacheLen = s.validationCache.Insert(cacheKey)
@@ -214,13 +235,31 @@ func (s *Schema) Exec(ctx context.Context, queryString string, operationName str
 	return s.exec(ctx, queryString, operationName, variables, s.res)
 }
 
+// ExecWithOptions is like Exec, but allows passing in schema options.  Not all schema options are
+// valid; some of them can only be set at Parse time.
+// The following options are valid:
+//   * DisableIntrospection
+//   * DisableSchemaIntrospection
+// The following options cannot be used, or the system may crash due to races:
+//   * UseFieldResolvers
+func (s *Schema) ExecWithOptions(ctx context.Context, queryString string, operationName string, variables map[string]interface{}, opts ...SchemaOpt) *Response {
+	if s.res.Resolver == (reflect.Value{}) {
+		panic("schema created without resolver, can not exec")
+	}
+	sCopy := *s
+	for _, opt := range opts {
+		opt(&sCopy)
+	}
+	return sCopy.exec(ctx, queryString, operationName, variables, sCopy.res)
+}
+
 func (s *Schema) exec(ctx context.Context, queryString string, operationName string, variables map[string]interface{}, res *resolvable.Schema) *Response {
 	doc, qErr := query.Parse(queryString)
 	if qErr != nil {
 		return &Response{Errors: []*errors.QueryError{qErr}}
 	}
 
-	errs := s.validate(ctx, queryString, doc, variables)
+	errs := s.validate(ctx, queryString, doc, variables, true)
 	if len(errs) != 0 {
 		return &Response{Errors: errs}
 	}
@@ -258,10 +297,11 @@ func (s *Schema) exec(ctx context.Context, queryString string, operationName str
 
 	r := &exec.Request{
 		Request: selected.Request{
-			Doc:                  doc,
-			Vars:                 variables,
-			Schema:               s.schema,
-			DisableIntrospection: s.disableIntrospection,
+			Doc:                        doc,
+			Vars:                       variables,
+			Schema:                     s.schema,
+			DisableIntrospection:       s.disableIntrospection,
+			DisableSchemaIntrospection: s.disableSchemaIntrospection,
 		},
 		Limiter: make(chan struct{}, s.maxParallelism),
 		Tracer:  s.tracer,

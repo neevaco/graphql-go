@@ -58,13 +58,9 @@ func (c *context) addErrMultiLoc(locs []errors.Location, rule string, format str
 	// during serving, which causes the validation logic to early exit on first error.  We should
 	// also ensure invalid queries are similarly caught early, rather than wasting time+space on
 	// them.  That's all possible, but hasn't been done yet.
-	qerrString := qerr.Error()
-	for _, old := range c.errs {
-		if old.Error() == qerrString {
-			return
-		}
+	if !errors.HasQueryError(qerr.Error(), c.errs) {
+		c.errs = append(c.errs, qerr)
 	}
-	c.errs = append(c.errs, qerr)
 }
 
 type opContext struct {
@@ -84,7 +80,14 @@ func newContext(s *schema.Schema, doc *query.Document, maxDepth int) *context {
 	}
 }
 
+// Validate validates doc and variables against s.
 func Validate(s *schema.Schema, doc *query.Document, variables map[string]interface{}, maxDepth int) []*errors.QueryError {
+	return validate(s, doc, variables, true, maxDepth)
+}
+
+// validate validates doc and variables against s.  If checkVariables is false, no variable-based
+// validation is done; i.e. we won't check if the schema requires non-null values.
+func validate(s *schema.Schema, doc *query.Document, variables map[string]interface{}, checkVariables bool, maxDepth int) []*errors.QueryError {
 	c := newContext(s, doc, maxDepth)
 
 	opNames := make(nameSet)
@@ -116,7 +119,9 @@ func Validate(s *schema.Schema, doc *query.Document, variables map[string]interf
 			if !canBeInput(t) {
 				c.addErr(v.TypeLoc, "VariablesAreInputTypes", "Variable %q cannot be non-input type %q.", "$"+v.Name.Name, t)
 			}
-			validateValue(opc, v, variables[v.Name.Name], t)
+			if checkVariables {
+				validateValue(opc, v, variables[v.Name.Name], t)
+			}
 
 			if v.Default != nil {
 				validateLiteral(opc, v.Default)
@@ -197,6 +202,26 @@ func Validate(s *schema.Schema, doc *query.Document, variables map[string]interf
 		}
 	}
 
+	return c.errs
+}
+
+// ValidateWithoutVariables validates doc against s without any variable-based validation; e.g. we
+// won't check if the schema requires non-null values.
+func ValidateWithoutVariables(s *schema.Schema, doc *query.Document, maxDepth int) []*errors.QueryError {
+	return validate(s, doc, nil, false, maxDepth)
+}
+
+// ValidateVariablesOnly only runs the variable validation portion of Validate.  This assumes that
+// Validate or ValidateWithoutVariables has previously succeeded on the same doc.
+func ValidateVariablesOnly(s *schema.Schema, doc *query.Document, variables map[string]interface{}) []*errors.QueryError {
+	c := newContext(s, doc, 0)
+	for _, op := range doc.Operations {
+		opc := &opContext{c, []*query.Operation{op}}
+		for _, v := range op.Vars {
+			t := resolveType(c, v.Type)
+			validateValue(opc, v, variables[v.Name.Name], t)
+		}
+	}
 	return c.errs
 }
 

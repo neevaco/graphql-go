@@ -15,12 +15,13 @@ import (
 )
 
 type Request struct {
-	Schema               *schema.Schema
-	Doc                  *query.Document
-	Vars                 map[string]interface{}
-	Mu                   sync.Mutex
-	Errs                 []*errors.QueryError
-	DisableIntrospection bool
+	Schema                     *schema.Schema
+	Doc                        *query.Document
+	Vars                       map[string]interface{}
+	Mu                         sync.Mutex
+	Errs                       []*errors.QueryError
+	DisableIntrospection       bool
+	DisableSchemaIntrospection bool
 }
 
 func (r *Request) AddError(err *errors.QueryError) {
@@ -89,7 +90,7 @@ func applySelectionSet(r *Request, s *resolvable.Schema, e *resolvable.Object, s
 				}
 
 			case "__schema":
-				if !r.DisableIntrospection {
+				if !(r.DisableIntrospection || r.DisableSchemaIntrospection) {
 					flattenedSels = append(flattenedSels, &SchemaField{
 						Field:       s.Meta.FieldSchema,
 						Alias:       field.Alias.Name,
@@ -100,7 +101,7 @@ func applySelectionSet(r *Request, s *resolvable.Schema, e *resolvable.Object, s
 				}
 
 			case "__type":
-				if !r.DisableIntrospection {
+				if !(r.DisableIntrospection || r.DisableSchemaIntrospection) {
 					p := packer.ValuePacker{ValueType: reflect.TypeOf("")}
 					v, err := p.Pack(field.Arguments.MustGet("name").Value(r.Vars))
 					if err != nil {
